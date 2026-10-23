@@ -277,6 +277,7 @@ xuc_gyro_omega_threshold_rad_s: 0.8
 # Enable the optional PLL predictor only for the high_speed field trial.
 xuc_high_speed_phase_enabled: false
 xuc_high_speed_latest_frame_enabled: true # 仅已分类高速的下一次取图选最新帧；低速/静止仍保留最早待处理帧
+xuc_high_speed_pose_refinement_enabled: true # 仅高速独立Tracker：批量投影、0.1° yaw细化；低速/静止保持旧解算
 xuc_vehicle_model_enter_rad_s: 0.8
 xuc_vehicle_model_exit_rad_s: 0.45
 xuc_high_speed_enter_rad_s: 3.2

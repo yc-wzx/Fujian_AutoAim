@@ -17,6 +17,8 @@ def compile_run(code, name, *, sources=(), libraries=(), fixtures=None, argument
     env = os.environ.copy()
     binary = ROOT / "build" / (name + (".exe" if sys.platform == "win32" else ""))
     binary.parent.mkdir(exist_ok=True)
+    object_dir = ROOT / "build" / (name + ".objects")
+    object_dir.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="lightbar-search-") as directory:
         temporary = Path(directory)
         source = temporary / "test.cpp"
@@ -44,22 +46,35 @@ def compile_run(code, name, *, sources=(), libraries=(), fixtures=None, argument
                     env[key.upper()] = value
             cache = (ROOT / "build/CMakeCache.txt").read_text(encoding="utf-8")
             installed = re.search(r"^VCPKG_INSTALLED_DIR:PATH=(.+)$", cache, re.MULTILINE)
-            vcpkg = Path(installed.group(1).strip() if installed else "C:/vcpkg/installed") / "x64-windows"
-            env["PATH"] = str(vcpkg / "bin") + os.pathsep + env.get("PATH", "")
+            vcpkg = (Path(installed.group(1).strip()) / "x64-windows" if installed
+                     else ROOT / "build/deps/install")
+            runtime_dirs = {vcpkg / "bin", ROOT / "build",
+                            *[p.parent for p in vcpkg.rglob("opencv_core*.dll")]}
+            env["PATH"] = os.pathsep.join(map(str, runtime_dirs)) + os.pathsep + env.get("PATH", "")
             compiler = shutil.which("cl.exe", path=env.get("PATH"))
             if not compiler:
                 raise RuntimeError("MSVC compiler unavailable")
-            lib_names = {"opencv_core": "opencv_core4", "opencv_imgproc": "opencv_imgproc4"}
+            resolved_libraries = []
+            for lib in libraries:
+                matches = list(vcpkg.rglob(lib + ".lib"))
+                if lib.startswith("opencv_"):
+                    matches = [p for p in vcpkg.rglob(lib + "*.lib")
+                               if re.fullmatch(re.escape(lib) + r"\d+\.lib", p.name)]
+                if not matches:
+                    raise RuntimeError(f"Offline dependency {lib} not found in {vcpkg}")
+                resolved_libraries.append(str(sorted(matches)[0]))
             command = [compiler, "/nologo", "/std:c++17", "/EHsc", "/utf-8", "/O2", "/MD",
                        "/D_USE_MATH_DEFINES", "/DNOMINMAX", "/DFMT_SHARED", "/DSPDLOG_SHARED_LIB",
                        "/DSPDLOG_COMPILED_LIB", "/DSPDLOG_FMT_EXTERNAL", "/DWIN32_LEAN_AND_MEAN",
                        "/I" + str(temporary), "/I" + str(ROOT),
+                       "/I" + str(ROOT / "thirdparty/win_shims"),
+                       "/FI" + str(ROOT / "thirdparty/win_shims/win_fmt_enum.hpp"),
                        "/I" + str(ROOT / "io/serial/include"), "/I" + str(vcpkg / "include"),
                        "/I" + str(vcpkg / "include/opencv4"),
                        "/I" + str(vcpkg / "include/eigen3"), str(source),
-                       *[str(ROOT / p) for p in sources], "/Fo" + str(ROOT / "build") + "/",
+                       *[str(ROOT / p) for p in sources], "/Fo" + str(object_dir) + "/",
                        "/Fe" + str(binary), "/link", "/LIBPATH:" + str(vcpkg / "lib"),
-                       *[lib_names.get(lib, lib) + ".lib" for lib in libraries]]
+                       *resolved_libraries]
         else:
             command = ["g++", "-std=c++17", "-O1", "-pthread", "-I" + str(temporary),
                        "-I" + str(ROOT), "-I" + str(ROOT / "io/serial/include"),

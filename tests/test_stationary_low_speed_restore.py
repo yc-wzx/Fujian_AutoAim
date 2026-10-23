@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class StationaryLowSpeedRestoreTests(unittest.TestCase):
     def test_real_trackers_keep_high_speed_state_and_restore_legacy_prediction(self):
         source = (ROOT / "src/standard.cpp").read_text(encoding="utf-8")
-        begin = source.index("    auto targets = configured_tracker.track(armors, t);")
+        begin = source.index("    configured_tracker.set_high_speed_pose_refinement(")
         selection = source[begin:source.index("    if (roi_reacquisition_enabled)", begin)]
         code = r'''
 #include <cassert>
@@ -24,7 +24,8 @@ class StationaryLowSpeedRestoreTests(unittest.TestCase):
 using namespace std::chrono;
 namespace auto_aim {
 Solver::Solver(const std::string &) {}
-void Solver::solve(Armor &) const {}
+int pose_refinement_calls=0;
+void Solver::solve(Armor &, bool refine) const {if(refine) ++pose_refinement_calls;}
 std::vector<cv::Point2f> Solver::reproject_armor(
  const Eigen::Vector3d &,double,ArmorType,ArmorName) const {
  return {{0,0},{100,0},{100,40},{0,40}};
@@ -56,6 +57,7 @@ void run(const char * off,const char * on,bool restore) {
  auto_aim::RotationModelManager rotation_model_manager(cfg);
  auto_aim::GyroPhaseScheduler gyro_phase_scheduler;
  const bool configured_yaw_eskf_enabled=false;
+ const bool high_speed_pose_refinement_enabled=true;
  bool previous_legacy_tracker_active=false,high_speed_camera_mode=false;
  auto_aim::Aimer actual_aimer(off),reference_aimer(on),high_aimer(off);
  int high_checks=0,legacy_checks=0,cv_checks=0,aim_checks=0,frame=0;
@@ -75,6 +77,7 @@ SELECTION
   if(diag.state_after.size())assert((diag.state_after-reference_diag.state_after).norm()<1e-12);
   assert(diag.yaw_eskf_accepted==0 && !diag.yaw_eskf_enabled);
   if(legacy_tracker_active) {
+   assert(!tracker.frame_diagnostics().high_speed_pose_refinement);
    const auto expected=legacy_reference.track(legacy_input,t);same_targets(targets,expected);
    ++legacy_checks;
    if(!targets.empty() && targets.front().armor_motion_trusted(targets.front().last_id))++cv_checks;
@@ -104,6 +107,7 @@ SELECTION
   }
  }
  assert(high_checks>50);
+ if(restore)assert(auto_aim::pose_refinement_calls>0);
  if(restore)assert(legacy_checks>100 && cv_checks>100 && aim_checks>100);
  else assert(legacy_checks==0);
  std::cout<<"PASS restored="<<restore<<" legacy="<<legacy_checks<<" cv="<<cv_checks

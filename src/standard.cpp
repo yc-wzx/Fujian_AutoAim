@@ -218,6 +218,9 @@ int main(int argc, char * argv[])
   const bool restore_legacy_stationary_low_speed =
     integration_yaml["xuc_restore_legacy_stationary_low_speed"] &&
     integration_yaml["xuc_restore_legacy_stationary_low_speed"].as<bool>();
+  const bool high_speed_pose_refinement_enabled =
+    integration_yaml["xuc_high_speed_pose_refinement_enabled"] &&
+    integration_yaml["xuc_high_speed_pose_refinement_enabled"].as<bool>();
   // Use exactly Aimer's existing degree conversion and configuration source.
   const double selection_coming_rad = integration_yaml["comming_angle"].as<double>() / 57.3;
   const double selection_leaving_rad = integration_yaml["leaving_angle"].as<double>() / 57.3;
@@ -1443,6 +1446,10 @@ int main(int argc, char * argv[])
     // recorder.record(img, q, t);
     Eigen::Vector3d ypr = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
 
+    // As with latest-frame capture, use the previous classification for the
+    // next update. The independent stationary/low-speed tracker never opts in.
+    configured_tracker.set_high_speed_pose_refinement(
+      high_speed_pose_refinement_enabled && legacy_tracker && high_speed_camera_mode);
     auto targets = configured_tracker.track(armors, t);
     // Classify from the unchanged configured chain, even while legacy output is selected.
     const bool configured_model_trusted = !targets.empty() &&
@@ -1778,7 +1785,9 @@ int main(int argc, char * argv[])
       &native_fire_prediction, aim_geometry, aim_timing);
     command.high_speed_shoot = high_speed_mode;
     bool native_prediction_valid =
-      command.control && !targets.empty() && std::isfinite(command.yaw);
+      command.control && !targets.empty() && std::isfinite(command.yaw) &&
+      (!high_speed_mode || gyro_model_fresh || auto_aim::high_speed_prediction_usable(
+        command, native_fire_prediction, aimer.debug_aim_point, t));
     bool native_prediction_trusted =
       native_prediction_valid && tracker_converged && yaw_motion_model_trusted;
     double native_predicted_yaw = command.yaw;
@@ -1876,7 +1885,8 @@ int main(int argc, char * argv[])
         std::list<auto_aim::Target>{*fixed_center_candidate}, t, cboard.bullet_speed, true,
         &fixed_center_prediction, auto_aim::AimGeometry::whole_ekf,
         auto_aim::AimTiming::high_speed);
-      if (shadow_command.control && shadow_aimer.debug_aim_point.valid) {
+      if (auto_aim::high_speed_prediction_usable(
+            shadow_command, fixed_center_prediction, shadow_aimer.debug_aim_point, t)) {
         fixed_center_yaw_rad = shadow_command.yaw;
         fixed_center_pitch_rad = shadow_command.pitch;
         fixed_center_xyza = shadow_aimer.debug_aim_point.xyza;
@@ -3538,6 +3548,7 @@ int main(int argc, char * argv[])
           {"shoot_low_ms", xuc.shoot_low_ms(command.high_speed_shoot)},
           {"yaw_eskf_enabled", yaw_eskf_enabled},
           {"yaw_prediction_source", yaw_prediction_source},
+          {"high_speed_pose_refinement", tracker.frame_diagnostics().high_speed_pose_refinement},
           {"yaw_model_trusted", yaw_motion_model_trusted},
           {"legacy_stationary_low_speed", legacy_tracker_active},
           {"rotation_mode_trusted", rotation_model.tracker_trusted},

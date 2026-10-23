@@ -63,6 +63,42 @@ int main(int argc,char **argv) {
                       "leaving_angle: 20\nhigh_speed_delay_time: 0.340\nlow_speed_delay_time: 0.340\n"
                       "stationary_delay_time: 0.340\ndecision_speed: 0.8\n"}, arguments=("config.yaml",))
 
+    def test_shared_solution_gate_rejects_invalid_ballistics(self):
+        compile_run(r'''
+#include "tasks/auto_aim/aimer.hpp"
+#include <cassert>
+#include <iostream>
+using namespace auto_aim;
+int main() {
+  const auto frame=std::chrono::steady_clock::time_point(std::chrono::seconds(1));
+  io::Command command{true,false,0.,0.};
+  AimPoint point{true,Eigen::Vector4d(3.,0.,.1,0.)};
+  AimPredictionTrace t;t.valid=t.converged=t.whole_ekf_geometry=true;
+  t.face_id=2;t.base_prediction_ns=1400000000;t.prediction_ns=1550000000;
+  t.flight_time_s=t.flight_time_used_s=.15;
+  assert(high_speed_prediction_usable(command,t,point,frame));
+  int rejected=0;
+  const auto reject=[&](const auto & c,const auto & p,const auto & trace) {
+    assert(!high_speed_prediction_usable(c,trace,p,frame));++rejected;
+  };
+  auto q=t;q.converged=false;reject(command,point,q);
+  q=t;q.valid=false;reject(command,point,q);
+  q=t;q.face_id=-1;reject(command,point,q);
+  q=t;q.face_id=4;reject(command,point,q);
+  q=t;q.flight_time_s=NAN;reject(command,point,q);
+  q=t;q.flight_time_s=.16;reject(command,point,q);
+  q=t;q.flight_time_used_s=0.;reject(command,point,q);
+  q=t;q.prediction_ns+=10000000;reject(command,point,q);
+  q=t;q.base_prediction_ns=900000000;reject(command,point,q);
+  q=t;q.whole_ekf_geometry=false;reject(command,point,q);
+  auto c=command;c.pitch=NAN;reject(c,point,t);
+  c=command;c.control=false;reject(c,point,t);
+  auto p=point;p.xyza[2]=NAN;reject(command,p,t);
+  p=point;p.valid=false;reject(command,p,t);
+  std::cout<<"PASS shared production/simulator prediction gate: "<<rejected<<" invalid cases\n";
+}
+''', "test_high_speed_solution_gate")
+
     def test_model_ownership_readiness_blind_gap_and_reset(self):
         compile_run(r'''
 #include "tasks/auto_aim/fixed_center_model.hpp"

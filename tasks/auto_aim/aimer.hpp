@@ -41,6 +41,26 @@ struct AimPredictionTrace
   double flight_time_s = std::numeric_limits<double>::quiet_NaN();
 };
 
+// Shared by the physical high-speed fire gate and simulator. A finite yaw by
+// itself is insufficient: the selected face must belong to a converged,
+// finite ballistic solution at the recorded future instant.
+inline bool high_speed_prediction_usable(
+  const io::Command & command, const AimPredictionTrace & trace, const AimPoint & point,
+  std::chrono::steady_clock::time_point frame_time)
+{
+  const auto frame_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    frame_time.time_since_epoch()).count();
+  return command.control && std::isfinite(command.yaw) && std::isfinite(command.pitch) &&
+    point.valid && point.xyza.allFinite() && trace.valid && trace.converged &&
+    trace.whole_ekf_geometry && trace.face_id >= 0 && trace.face_id < 4 &&
+    trace.base_prediction_ns >= frame_ns && trace.prediction_ns > trace.base_prediction_ns &&
+    std::isfinite(trace.flight_time_s) && trace.flight_time_s > 0.0 &&
+    std::isfinite(trace.flight_time_used_s) && trace.flight_time_used_s > 0.0 &&
+    std::abs((trace.prediction_ns - trace.base_prediction_ns) / 1e9 -
+             trace.flight_time_used_s) < 0.000002 &&
+    std::abs(trace.flight_time_s - trace.flight_time_used_s) < 0.001;
+}
+
 // Runtime geometry for one PLL event. No Aimer delay or ballistic iteration is
 // added: the scheduler has already chosen the absolute impact time.
 struct EventAimPrediction
@@ -64,7 +84,7 @@ struct EventAimPrediction
 class Aimer
 {
 public:
-  AimPoint debug_aim_point;
+  AimPoint debug_aim_point{false, Eigen::Vector4d::Zero()};
   explicit Aimer(const std::string & config_path);
   io::Command aim(
     std::list<Target> targets, std::chrono::steady_clock::time_point timestamp, double bullet_speed,

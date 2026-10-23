@@ -3,6 +3,9 @@
 #include <yaml-cpp/yaml.h>
 
 #include <vector>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
@@ -64,7 +67,7 @@ void Solver::set_R_gimbal2world(const Eigen::Quaterniond & q)
 }
 
 //solvePnP（获得姿态）
-void Solver::solve(Armor & armor) const
+void Solver::solve(Armor & armor, bool high_speed_refinement) const
 {
   const auto & object_points =
     (armor.type == ArmorType::big) ? BIG_ARMOR_POINTS : SMALL_ARMOR_POINTS;
@@ -96,7 +99,11 @@ void Solver::solve(Armor & armor) const
                      armor.name == ArmorName::five);
   if (is_balance) return;
 
-  optimize_yaw(armor);
+  if (high_speed_refinement && armor.type == ArmorType::small &&
+      armor.name != ArmorName::outpost && armor.name != ArmorName::base)
+    optimize_high_speed_yaw(armor);
+  else
+    optimize_yaw(armor);
 }
 
 std::vector<cv::Point2f> Solver::reproject_armor(
@@ -227,6 +234,88 @@ void Solver::optimize_yaw(Armor & armor) const
 
   armor.yaw_raw = armor.ypr_in_world[0];
   armor.ypr_in_world[0] = best_yaw;
+}
+
+std::vector<double> Solver::yaw_errors(
+  const Armor & armor, const std::vector<double> & yaws) const
+{
+  // Project all candidate corners in one call. Keep the original fixed tilt,
+  // calibration and sum-of-corner-distances objective; do not substitute a
+  // different cost function or trust an oblique PnP yaw as the search seed.
+  const auto & corners = SMALL_ARMOR_POINTS;
+  const Eigen::Matrix3d raw_world_to_camera =
+    R_camera2gimbal_.transpose() * R_gimbal2world_.transpose();
+  // Legacy reproject_armor passes each composed matrix through Rodrigues.
+  // Calibrated extrinsics can be slightly non-orthogonal. Its polar rotation
+  // can be computed once: polar(A * R) = polar(A) * R for a rotation R.
+  cv::Mat rotation_matrix;
+  cv::eigen2cv(raw_world_to_camera, rotation_matrix);
+  cv::Vec3d rotation_vector;
+  cv::Rodrigues(rotation_matrix, rotation_vector);
+  cv::Rodrigues(rotation_vector, rotation_matrix);
+  Eigen::Matrix3d world_to_camera;
+  cv::cv2eigen(rotation_matrix, world_to_camera);
+  const Eigen::Vector3d translation = R_camera2gimbal_.transpose() *
+    (R_gimbal2world_.transpose() * armor.xyz_in_world - t_camera2gimbal_);
+  const double tilt = 15.0 * CV_PI / 180.0;
+  const double cp = std::cos(tilt), sp = std::sin(tilt);
+  std::vector<cv::Point3d> camera_points;
+  camera_points.reserve(yaws.size() * 4);
+  std::vector<bool> visible(yaws.size(), true);
+  for (std::size_t i = 0; i < yaws.size(); ++i) {
+    const double cy = std::cos(yaws[i]), sy = std::sin(yaws[i]);
+    Eigen::Matrix3d rotation;
+    rotation << cy * cp, -sy, cy * sp, sy * cp, cy, sy * sp, -sp, 0.0, cp;
+    const Eigen::Matrix3d camera_rotation = world_to_camera * rotation;
+    for (const auto & corner : corners) {
+      const Eigen::Vector3d point = camera_rotation *
+        Eigen::Vector3d(corner.x, corner.y, corner.z) + translation;
+      if (!point.allFinite() || point.z() <= 0.0) visible[i] = false;
+      camera_points.emplace_back(point.x(), point.y(), point.z());
+    }
+  }
+  std::vector<cv::Point2d> projected;
+  cv::projectPoints(camera_points, cv::Vec3d(0, 0, 0), cv::Vec3d(0, 0, 0),
+                    camera_matrix_, distort_coeffs_, projected);
+  std::vector<double> errors(yaws.size(), std::numeric_limits<double>::infinity());
+  for (std::size_t i = 0; i < yaws.size(); ++i) {
+    if (!visible[i]) continue;
+    double error = 0.0;
+    for (std::size_t j = 0; j < 4; ++j)
+      error += std::hypot(projected[i * 4 + j].x - armor.points[j].x,
+                          projected[i * 4 + j].y - armor.points[j].y);
+    if (std::isfinite(error)) errors[i] = error;
+  }
+  return errors;
+}
+
+void Solver::optimize_high_speed_yaw(Armor & armor) const
+{
+  const double step = CV_PI / 180.0;
+  const auto gimbal_ypr = tools::eulers(R_gimbal2world_, 2, 1, 0);
+  const double start = gimbal_ypr[0] - 70.0 * step;
+  std::vector<double> coarse;
+  coarse.reserve(140);
+  for (int i = 0; i < 140; ++i) coarse.push_back(start + i * step);
+  const auto errors = yaw_errors(armor, coarse);
+  const auto best = std::min_element(errors.begin(), errors.end());
+  if (best == errors.end() || !std::isfinite(*best)) {
+    optimize_yaw(armor);
+    return;
+  }
+  const double seed = coarse[std::distance(errors.begin(), best)];
+  double best_yaw = seed, best_error = *best;
+  std::vector<double> fine;
+  for (int i = -9; i <= 9; ++i) {
+    const double candidate = seed + i * step / 10.0;
+    if (candidate >= coarse.front() && candidate <= coarse.back()) fine.push_back(candidate);
+  }
+  const auto refined = yaw_errors(armor, fine);
+  for (std::size_t i = 0; i < fine.size(); ++i) {
+    if (refined[i] < best_error) { best_error = refined[i]; best_yaw = fine[i]; }
+  }
+  armor.yaw_raw = armor.ypr_in_world[0];
+  armor.ypr_in_world[0] = tools::limit_rad(best_yaw);
 }
 
 double Solver::SJTU_cost(

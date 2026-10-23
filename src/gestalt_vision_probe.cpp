@@ -305,6 +305,13 @@ int main(int argc, char ** argv)
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(frame.t_present)));
       auto targets = tracker.track(tracked_armors, t);
+      // This probe targets a fixed high-speed rotor. Opt in only after a
+      // trusted high-speed observation, using the same solver path as standard.
+      const bool refine_pose = runtime["xuc_high_speed_pose_refinement_enabled"] &&
+        runtime["xuc_high_speed_pose_refinement_enabled"].as<bool>() &&
+        !targets.empty() && targets.front().yaw_model_trusted() &&
+        std::abs(targets.front().ekf_x()[7]) >= 3.2;
+      tracker.set_high_speed_pose_refinement(refine_pose);
       // Tracker already solves its selected/associated detections. Reuse those
       // owned observations for diagnostics instead of repeating IPPE and the
       // 140-angle reprojection search before every tracking update.
@@ -325,6 +332,7 @@ int main(int argc, char ** argv)
       nlohmann::json sample{{"frame_id", frame.frame_id}, {"capture_qpc_s", frame.t_present},
         {"detections", observations}, {"observation_source", "tracker_solved_observations"},
         {"tracker_state", tracker.state()},
+        {"high_speed_pose_refinement", tracker.frame_diagnostics().high_speed_pose_refinement},
         {"processing_ms", std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - begin).count()}};
       if (!armors.empty()) ++detection_frames;
@@ -354,7 +362,8 @@ int main(int argc, char ** argv)
           // Fixed-center bench: a converged flag alone can occur during a bad
           // initialization. Do not steer the camera with an untrusted state,
           // invalid ballistic trace, or a future point far outside this rotor.
-          const bool aim_valid = trace.valid && trace.converged && target.yaw_model_trusted() &&
+          const bool aim_valid = auto_aim::high_speed_prediction_usable(
+              command, trace, aimer.debug_aim_point, t) && target.yaw_model_trusted() &&
             point.allFinite() && point_range > .5 && point_shift < radius_bound + .35 &&
             std::isfinite(trace.flight_time_s) &&
             trace.flight_time_s >= .8 * point_range / bullet_speed &&
