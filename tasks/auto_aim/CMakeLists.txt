@@ -96,7 +96,8 @@ if(WIN32)
         ${PROJECT_SOURCE_DIR}/thirdparty/win_shims
         ${PROJECT_SOURCE_DIR}/io/serial/include)
     target_compile_options(auto_aim PRIVATE
-        /FI"${PROJECT_SOURCE_DIR}/thirdparty/win_shims/win_fmt_enum.hpp")
+        /utf-8
+        "/FI${PROJECT_SOURCE_DIR}/thirdparty/win_shims/win_fmt_enum.hpp")
 endif()
 
 # 条件链接：OpenVINO

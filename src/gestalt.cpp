@@ -2888,7 +2888,11 @@ int main(int argc, char ** argv)
 
     const auto t = qpc_to_steady(frame.t_present);
     auto t_det0 = std::chrono::steady_clock::now();
-    auto armors = detector.detect(frame.img);
+    // The simulator capture is BGR; the production detector and light-bar
+    // color gate consume RGB, as supplied by the physical camera adapter.
+    cv::Mat detector_rgb;
+    cv::cvtColor(frame.img, detector_rgb, cv::COLOR_BGR2RGB);
+    auto armors = detector.detect(detector_rgb);
     auto t_det1 = std::chrono::steady_clock::now();
     if (!armors.empty()) det_frames++;
     // Detection histogram (raw, BEFORE tracker filters erase misclassified

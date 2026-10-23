@@ -6,7 +6,7 @@
 #include <dxgi1_2.h>
 #include <psapi.h>
 
-#include <atlbase.h>  // CComPtr
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -16,6 +16,8 @@
 
 namespace io::gestalt
 {
+using Microsoft::WRL::ComPtr;
+
 namespace
 {
 struct FoundWindow
@@ -85,40 +87,41 @@ double qpc_to_seconds(LONGLONG qpc)
 
 struct WinCapture::Impl
 {
-  CComPtr<ID3D11Device> device;
-  CComPtr<ID3D11DeviceContext> context;
-  CComPtr<IDXGIOutputDuplication> dupl;
-  CComPtr<ID3D11Texture2D> staging;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<IDXGIOutputDuplication> dupl;
+  ComPtr<ID3D11Texture2D> staging;
   int desk_w = 0, desk_h = 0;
   int desk_x = 0, desk_y = 0;  // desktop coords of the duplicated output
   HWND hwnd = nullptr;
 
   bool init_duplication(HMONITOR target_monitor)
   {
-    dupl.Release();
-    staging.Release();
-    context.Release();
-    device.Release();
+    dupl.Reset();
+    staging.Reset();
+    context.Reset();
+    device.Reset();
 
     D3D_FEATURE_LEVEL fl;
     if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
-                                 D3D11_SDK_VERSION, &device, &fl, &context)))
+                                 D3D11_SDK_VERSION, device.GetAddressOf(), &fl,
+                                 context.GetAddressOf())))
       return false;
 
-    CComPtr<IDXGIDevice> dxgi_device;
-    if (FAILED(device->QueryInterface(&dxgi_device))) return false;
-    CComPtr<IDXGIAdapter> adapter;
-    if (FAILED(dxgi_device->GetAdapter(&adapter))) return false;
+    ComPtr<IDXGIDevice> dxgi_device;
+    if (FAILED(device.As(&dxgi_device))) return false;
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(dxgi_device->GetAdapter(adapter.GetAddressOf()))) return false;
 
     for (UINT i = 0;; ++i) {
-      CComPtr<IDXGIOutput> output;
-      if (adapter->EnumOutputs(i, &output) == DXGI_ERROR_NOT_FOUND) break;
+      ComPtr<IDXGIOutput> output;
+      if (adapter->EnumOutputs(i, output.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) break;
       DXGI_OUTPUT_DESC desc;
       output->GetDesc(&desc);
       if (target_monitor && desc.Monitor != target_monitor) continue;
-      CComPtr<IDXGIOutput1> output1;
-      if (FAILED(output->QueryInterface(&output1))) continue;
-      if (FAILED(output1->DuplicateOutput(device, &dupl))) continue;
+      ComPtr<IDXGIOutput1> output1;
+      if (FAILED(output.As(&output1))) continue;
+      if (FAILED(output1->DuplicateOutput(device.Get(), dupl.ReleaseAndGetAddressOf()))) continue;
       desk_x = desc.DesktopCoordinates.left;
       desk_y = desc.DesktopCoordinates.top;
       desk_w = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
@@ -133,7 +136,7 @@ struct WinCapture::Impl
       td.SampleDesc.Count = 1;
       td.Usage = D3D11_USAGE_STAGING;
       td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-      if (FAILED(device->CreateTexture2D(&td, nullptr, &staging))) return false;
+      if (FAILED(device->CreateTexture2D(&td, nullptr, staging.GetAddressOf()))) return false;
       return true;
     }
     return false;
@@ -175,18 +178,18 @@ CapturedFrame WinCapture::grab(int timeout_ms)
   if (!impl_->dupl) return out;
 
   DXGI_OUTDUPL_FRAME_INFO info{};
-  CComPtr<IDXGIResource> resource;
-  HRESULT hr = impl_->dupl->AcquireNextFrame(timeout_ms, &info, &resource);
+  ComPtr<IDXGIResource> resource;
+  HRESULT hr = impl_->dupl->AcquireNextFrame(timeout_ms, &info, resource.GetAddressOf());
   if (hr == DXGI_ERROR_WAIT_TIMEOUT) return out;
   if (FAILED(hr)) {
     // Device lost / access lost: caller should re-init().
-    impl_->dupl.Release();
+    impl_->dupl.Reset();
     return out;
   }
 
-  CComPtr<ID3D11Texture2D> tex;
-  resource->QueryInterface(&tex);
-  impl_->context->CopyResource(impl_->staging, tex);
+  ComPtr<ID3D11Texture2D> tex;
+  resource.As(&tex);
+  impl_->context->CopyResource(impl_->staging.Get(), tex.Get());
   impl_->dupl->ReleaseFrame();
 
   // Re-read the window rect every frame (window may move/resize).
@@ -206,12 +209,12 @@ CapturedFrame WinCapture::grab(int timeout_ms)
   height_ = h;
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  if (FAILED(impl_->context->Map(impl_->staging, 0, D3D11_MAP_READ, 0, &mapped))) return out;
+  if (FAILED(impl_->context->Map(impl_->staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return out;
   cv::Mat desktop(impl_->desk_h, impl_->desk_w, CV_8UC4, mapped.pData,
                   static_cast<size_t>(mapped.RowPitch));
   cv::Mat roi = desktop(cv::Rect(x0, y0, w, h));
   cv::cvtColor(roi, out.img, cv::COLOR_BGRA2BGR);  // deep copy out of mapped mem
-  impl_->context->Unmap(impl_->staging, 0);
+  impl_->context->Unmap(impl_->staging.Get(), 0);
 
   // LastPresentTime==0 means the frame content is unchanged (mouse-only
   // update); treat as no new frame for the vision loop.

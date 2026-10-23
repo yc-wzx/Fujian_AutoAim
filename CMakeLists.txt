@@ -51,7 +51,9 @@ else()
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS true)
-add_definitions(-std=c++17)
+if(NOT MSVC)
+  add_definitions(-std=c++17)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
 message(STATUS "--------------------CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}--------------------")
@@ -208,10 +210,37 @@ if(WIN32)
   target_include_directories(gestalt PRIVATE thirdparty/easywsclient)
   target_link_libraries(gestalt
     ${OpenCV_LIBS} fmt::fmt spdlog::spdlog yaml-cpp
-    openvino::runtime auto_aim tools
+    openvino::runtime nlohmann_json::nlohmann_json auto_aim tools
     d3d11 dxgi ws2_32 iphlpapi)
   target_compile_options(gestalt PRIVATE /utf-8)
   target_compile_definitions(gestalt PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
+
+  # Model-free runtime check for a fresh Windows simulator environment.
+  add_executable(gestalt_dependencies_test tests/gestalt_dependencies_test.cpp)
+  target_link_libraries(gestalt_dependencies_test PRIVATE
+    ${OpenCV_LIBS} fmt::fmt spdlog::spdlog yaml-cpp Eigen3::Eigen
+    nlohmann_json::nlohmann_json openvino::runtime)
+  target_compile_options(gestalt_dependencies_test PRIVATE /utf-8)
+
+  add_executable(gestalt_models_test tests/gestalt_models_test.cpp)
+  target_link_libraries(gestalt_models_test PRIVATE
+    ${OpenCV_LIBS} fmt::fmt spdlog::spdlog yaml-cpp
+    nlohmann_json::nlohmann_json openvino::runtime auto_aim tools)
+  target_compile_options(gestalt_models_test PRIVATE /utf-8)
+
+  add_executable(gestalt_shot_trial_test tests/gestalt_shot_trial_test.cpp)
+  target_link_libraries(gestalt_shot_trial_test PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_options(gestalt_shot_trial_test PRIVATE /utf-8)
+
+  add_executable(gestalt_vision_probe
+    src/gestalt_vision_probe.cpp io/gestalt/shared_frame_capture.cpp
+    io/gestalt/game_link.cpp thirdparty/easywsclient/easywsclient.cpp)
+  target_include_directories(gestalt_vision_probe PRIVATE thirdparty/easywsclient)
+  target_link_libraries(gestalt_vision_probe PRIVATE
+    ${OpenCV_LIBS} fmt::fmt spdlog::spdlog yaml-cpp
+    nlohmann_json::nlohmann_json openvino::runtime auto_aim tools ws2_32 iphlpapi)
+  target_compile_options(gestalt_vision_probe PRIVATE /utf-8)
+  target_compile_definitions(gestalt_vision_probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
 else()
 add_subdirectory(tools)
 add_subdirectory(io)

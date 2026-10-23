@@ -1,5 +1,9 @@
 # 格式塔 drive-aim v4q 最终仿真归档
 
+当前省赛 17 mm、3 m、4.87 rad/s 固定旋转靶的接入检查见
+[固定旋转靶检查记录](../docs/gestalt_fixed_target.md)。本页下述命中率属于历史前哨站场景。
+Windows 依赖构建与验证见[Windows 格式塔环境](../docs/windows_gestalt.md)。
+
 最终候选 v4q 的完整结论见 `REPORT.md`。
 
 - 反转：5/5 有效，150 发，120 次伤害命中，80.0%。

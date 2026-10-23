@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify current external runtime dependencies without modifying files."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -7,10 +8,14 @@ import sys
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--kind', choices=('model', 'sdk'), help='Check only the selected resource kind')
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / 'docs/artifacts.json').read_text(encoding='utf-8'))
+    items = [item for item in manifest['files'] if args.kind is None or item['kind'] == args.kind]
     failures = []
-    for item in manifest['files']:
+    for item in items:
         path = (root / item['path']).resolve()
         if not path.is_relative_to(root):
             raise ValueError('Resource path is outside this repository')
@@ -22,7 +27,7 @@ def main():
     if failures:
         print('\n'.join(failures), file=sys.stderr)
         return 1
-    print(f"Verified {len(manifest['files'])} current runtime resources; no files changed or application started.")
+    print(f"Verified {len(items)} current runtime resources; no files changed or application started.")
     return 0
 
 
