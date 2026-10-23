@@ -81,6 +81,15 @@ public:
   // Coherent rigid-body geometry from the whole-vehicle EKF only. Association
   // and existing motion consumers continue to use armor_xyza_list()/ekf_x().
   std::vector<Eigen::Vector4d> whole_ekf_armor_xyza_list() const;
+  struct RigidArmorPrediction
+  {
+    Eigen::Vector2d center;
+    Eigen::Vector4d xyza;
+  };
+  // Mean-only query for the explicit four-plate high-speed ballistic path.
+  // Uses the same CV state/geometry as predict(), without touching filters.
+  std::optional<RigidArmorPrediction> predict_rigid_armor(
+    int face, std::chrono::steady_clock::time_point time) const;
   // A prediction-only value object for an independent fixed-centre shadow.
   // The live tracker and all non-high-speed consumers remain untouched.
   std::optional<Target> with_fixed_center_prediction(const Eigen::VectorXd & state) const;

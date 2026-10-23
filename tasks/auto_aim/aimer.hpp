@@ -27,6 +27,8 @@ enum class AimGeometry { existing, whole_ekf };
 // Explicit timing in standard; automatic preserves other callers' legacy API.
 enum class AimTiming { automatic, stationary, low_speed, high_speed };
 
+inline constexpr double high_speed_flight_tolerance_s = 0.00001;
+
 // Optional observer of the existing iterations. Never used for control.
 struct AimPredictionTrace
 {
@@ -58,7 +60,7 @@ inline bool high_speed_prediction_usable(
     std::isfinite(trace.flight_time_used_s) && trace.flight_time_used_s > 0.0 &&
     std::abs((trace.prediction_ns - trace.base_prediction_ns) / 1e9 -
              trace.flight_time_used_s) < 0.000002 &&
-    std::abs(trace.flight_time_s - trace.flight_time_used_s) < 0.001;
+    std::abs(trace.flight_time_s - trace.flight_time_used_s) < high_speed_flight_tolerance_s;
 }
 
 // Runtime geometry for one PLL event. No Aimer delay or ballistic iteration is

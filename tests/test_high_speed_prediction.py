@@ -87,6 +87,8 @@ int main() {
   q=t;q.face_id=4;reject(command,point,q);
   q=t;q.flight_time_s=NAN;reject(command,point,q);
   q=t;q.flight_time_s=.16;reject(command,point,q);
+  q=t;q.flight_time_s+=.00005;reject(command,point,q);
+  q=t;q.flight_time_s+=.000009;assert(high_speed_prediction_usable(command,q,point,frame));
   q=t;q.flight_time_used_s=0.;reject(command,point,q);
   q=t;q.prediction_ns+=10000000;reject(command,point,q);
   q=t;q.base_prediction_ns=900000000;reject(command,point,q);

@@ -150,19 +150,17 @@ io::Command Aimer::aim(
       for (int iteration = 0; iteration < 10; ++iteration) {
         const auto prediction_time = future + std::chrono::microseconds(
           static_cast<int>(previous_flight * 1e6));
-        auto candidate = target;
-        candidate.predict(prediction_time);
-        const auto faces = candidate.whole_ekf_armor_xyza_list();
-        if (face >= faces.size() || !faces[face].allFinite()) break;
-        const auto & point = faces[face];
+        const auto candidate = target.predict_rigid_armor(static_cast<int>(face), prediction_time);
+        if (!candidate) break;
+        const auto & point = candidate->xyza;
         tools::Trajectory trajectory(bullet_speed, point.head<2>().norm(), point[2]);
         if (trajectory.unsolvable || !std::isfinite(trajectory.fly_time) ||
             trajectory.fly_time <= 0.0) break;
-        if (std::abs(trajectory.fly_time - previous_flight) < 0.001) {
-          const auto & state = candidate.ekf().x;
-          const double phase = tools::limit_rad(point[3] - std::atan2(state[2], state[0]));
+        if (std::abs(trajectory.fly_time - previous_flight) < high_speed_flight_tolerance_s) {
+          const double phase = tools::limit_rad(
+            point[3] - std::atan2(candidate->center[1], candidate->center[0]));
           const bool selectable = std::abs(phase) <= comming_angle_ &&
-            (state[7] > 0.0 ? phase < leaving_angle_ : phase > -leaving_angle_);
+            (target.ekf().x[7] > 0.0 ? phase < leaving_angle_ : phase > -leaving_angle_);
           const double yaw = std::atan2(point[1], point[0]) + yaw_offset_;
           const double pitch = -(trajectory.pitch + pitch_offset_);
           if (!selectable || !std::isfinite(yaw) || !std::isfinite(pitch)) break;
@@ -200,8 +198,10 @@ io::Command Aimer::aim(
     return {false, false, 0, 0};
   }
 
-  // 迭代求解飞行时间 (最多10次，收敛条件：相邻两次fly_time差 <0.001)
+  // 最多10次；显式高速整车按10us收敛，其他路径保持原1ms。
   bool converged = false;
+  const double flight_tolerance_s = timing == AimTiming::high_speed && whole_ekf_geometry
+    ? high_speed_flight_tolerance_s : 0.001;
   double prev_fly_time = trajectory0.fly_time;
   tools::Trajectory current_traj = trajectory0;
   std::vector<Target> iteration_target(10, target);  // 创建10个目标副本用于迭代预测
@@ -240,7 +240,7 @@ io::Command Aimer::aim(
     }
 
     // 检查收敛条件
-    if (std::abs(current_traj.fly_time - prev_fly_time) < 0.001) {
+    if (std::abs(current_traj.fly_time - prev_fly_time) < flight_tolerance_s) {
       converged = true;
       break;
     }
