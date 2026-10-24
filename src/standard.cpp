@@ -3549,6 +3549,7 @@ int main(int argc, char * argv[])
           {"yaw_eskf_enabled", yaw_eskf_enabled},
           {"yaw_prediction_source", yaw_prediction_source},
           {"high_speed_pose_refinement", tracker.frame_diagnostics().high_speed_pose_refinement},
+          {"high_speed_pose_rejections", tracker.frame_diagnostics().high_speed_pose_rejections},
           {"yaw_model_trusted", yaw_motion_model_trusted},
           {"legacy_stationary_low_speed", legacy_tracker_active},
           {"rotation_mode_trusted", rotation_model.tracker_trusted},

@@ -10,13 +10,18 @@ class HighSpeedPoseTests(unittest.TestCase):
             "R_camera2gimbal: [0,0,1,-1,0,0,0,-1,0]\n"
             "t_camera2gimbal: [0.02,-0.01,0.005]\n"
             "camera_matrix: [1500,0,720,0,1490,540,0,0,1]\n"
-            "distort_coeffs: [0.03,-0.01,0.0002,-0.0001,0.001]\n")
+            "distort_coeffs: [0.03,-0.01,0.0002,-0.0001,0.001]\n"
+            "enemy_color: blue\nmin_detect_count: 1\nmax_temp_lost_count: 15\n"
+            "outpost_max_temp_lost_count: 75\nyaw_eskf_enabled: false\n"
+            "tracker_identity_fallback_enabled: true\n")
         compile_run(r'''
 #include "tasks/auto_aim/solver.hpp"
+#include "tasks/auto_aim/tracker.hpp"
 #include "tools/math_tools.hpp"
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <optional>
 using namespace auto_aim;
 constexpr double degree = M_PI / 180.;
@@ -45,7 +50,7 @@ int main(int argc,char **argv) {
     Armor original(9,.95f,cv::Rect(0,0,100,40),points);
     original.name=ArmorName::three;original.type=ArmorType::small;
     auto legacy=original,refined=original;
-    solver.solve(legacy);solver.solve(refined,true);
+    assert(solver.solve(legacy));assert(solver.solve(refined,true));
     assert((legacy.xyz_in_world-refined.xyz_in_world).norm()<1e-12);
     assert((legacy.ypr_in_gimbal-refined.ypr_in_gimbal).norm()<1e-12);
     assert(legacy.yaw_raw==refined.yaw_raw);
@@ -69,9 +74,60 @@ int main(int argc,char **argv) {
                  std::make_pair(ArmorType::big,ArmorName::base)}) {
     const auto points=solver.reproject_armor({3.,0.,.08},.2,kind.first,kind.second);
     Armor a(9,.95f,cv::Rect(0,0,100,40),points);a.type=kind.first;a.name=kind.second;
-    auto b=a;solver.solve(a);solver.solve(b,true);
+    auto b=a;assert(solver.solve(a));assert(solver.solve(b,true));
     assert((a.xyz_in_world-b.xyz_in_world).norm()==0.);
     assert((a.ypr_in_world-b.ypr_in_world).norm()==0.);++excluded;
+  }
+  // Rejected corners must not become high-speed estimator observations.
+  const auto valid_points=solver.reproject_armor({3.,0.,.08},.2,ArmorType::small,ArmorName::three);
+  Tracker tracker(argv[fixture],solver,false);
+  tracker.set_high_speed_pose_refinement(true);
+  auto stamp=std::chrono::steady_clock::now();
+  const auto track=[&](Armor a) {
+    a.color=Color::blue;a.type=ArmorType::small;
+    if(a.name!=ArmorName::four) a.name=ArmorName::three;
+    std::list<Armor> inputs{a};stamp+=std::chrono::milliseconds(10);
+    return tracker.track(inputs,stamp);
+  };
+  int invalid=0;
+  for(int kind=0;kind<9;++kind) {
+    Armor bad(9,.95f,cv::Rect(0,0,100,40),valid_points);
+    if(kind==0) bad.points.clear();
+    if(kind==1) bad.points.pop_back();
+    if(kind==2) bad.points.push_back(bad.points.front());
+    if(kind==3) bad.points[0].x=std::numeric_limits<float>::quiet_NaN();
+    if(kind==4) bad.points[1].y=std::numeric_limits<float>::infinity();
+    if(kind==5) for(auto & p:bad.points)p={100.f,100.f};
+    if(kind==6) bad.points={{0,0},{10,10},{20,20},{30,30}};
+    if(kind==7) std::swap(bad.points[1],bad.points[2]);
+    if(kind==8) bad.points[2]=bad.points[1];
+    assert(!solver.solve(bad,true));++invalid;
+    assert(track(bad).empty());
+    assert(tracker.state()=="lost" && !tracker.frame_diagnostics().initialized_this_frame);
+    assert(tracker.frame_diagnostics().high_speed_pose_rejections==1);
+  }
+  // Finite image points cannot legitimize a broken transform. The subsequent
+  // valid solve also checks that rejection does not poison solver state.
+  Armor bad_transform(9,.95f,cv::Rect(0,0,100,40),valid_points);
+  solver.set_R_gimbal2world(Eigen::Quaterniond(std::numeric_limits<double>::quiet_NaN(),0,0,0));
+  assert(!solver.solve(bad_transform,true));++invalid;
+  solver.set_R_gimbal2world(Eigen::Quaterniond::Identity());
+  assert(solver.solve(bad_transform,true));
+  Armor valid(9,.95f,cv::Rect(0,0,100,40),valid_points);
+  valid.name=ArmorName::three;
+  for(int k=0;k<6;++k) assert(!track(valid).empty());
+  auto mature=track(valid);assert(!mature.empty() && mature.front().convergened());
+  assert(tracker.state()=="tracking");
+  for(bool fallback:{false,true}) {
+    auto bad=valid;bad.points[0].x=std::numeric_limits<float>::quiet_NaN();
+    if(fallback) bad.name=ArmorName::four;
+    track(bad);
+    assert(tracker.frame_diagnostics().high_speed_pose_rejections==1);
+    assert(tracker.frame_diagnostics().update_observations==0);
+    assert(tracker.last_associations().empty());
+    assert(!track(valid).empty());
+    assert(tracker.frame_diagnostics().high_speed_pose_rejections==0);
+    assert(tracker.frame_diagnostics().update_observations==1);
   }
   std::array<double,2> elapsed{};
   // Informational timing only; do not assert wall-clock speed in a unit test.
@@ -82,12 +138,14 @@ int main(int argc,char **argv) {
       std::chrono::steady_clock::now()-begin).count()/150.;
   }
   std::cout<<"PASS pose fixture="<<fixture<<" cases="<<cases<<" improved="<<improved<<" excluded="<<excluded
-    <<" noiseless_worst_deg="<<worst<<" legacy_ms="<<elapsed[0]
+    <<" invalid_rejected="<<invalid<<" noiseless_worst_deg="<<worst<<" legacy_ms="<<elapsed[0]
     <<" refined_ms="<<elapsed[1]<<"; synthetic projections, not hit rate\n";
  }
 }
 ''', "test_high_speed_pose", sources=("tasks/auto_aim/solver.cpp",
-            "tasks/auto_aim/armor.cpp", "tools/math_tools.cpp", "tools/logger.cpp"),
+            "tasks/auto_aim/tracker.cpp", "tasks/auto_aim/target.cpp",
+            "tools/extended_kalman_filter.cpp", "tasks/auto_aim/armor.cpp",
+            "tools/math_tools.cpp", "tools/logger.cpp"),
             libraries=("opencv_core", "opencv_imgproc", "opencv_calib3d", "yaml-cpp", "spdlog", "fmt"),
             fixtures={"pose.yaml": calibration, "rounded.yaml": calibration.replace(
                 "[0,0,1,-1,0,0,0,-1,0]",

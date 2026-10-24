@@ -25,7 +25,7 @@ using namespace std::chrono;
 namespace auto_aim {
 Solver::Solver(const std::string &) {}
 int pose_refinement_calls=0;
-void Solver::solve(Armor &, bool refine) const {if(refine) ++pose_refinement_calls;}
+bool Solver::solve(Armor &, bool refine) const {if(refine) ++pose_refinement_calls;return true;}
 std::vector<cv::Point2f> Solver::reproject_armor(
  const Eigen::Vector3d &,double,ArmorType,ArmorName) const {
  return {{0,0},{100,0},{100,40},{0,40}};

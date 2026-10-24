@@ -67,15 +67,46 @@ void Solver::set_R_gimbal2world(const Eigen::Quaterniond & q)
 }
 
 //solvePnP（获得姿态）
-void Solver::solve(Armor & armor, bool high_speed_refinement) const
+bool Solver::solve(Armor & armor, bool high_speed_refinement) const
+{
+  if (!high_speed_refinement) return solve_pose(armor, false);
+
+  // A malformed network quadrilateral is not an estimator observation. Keep
+  // this rejection local to the configured high-speed tracker.
+  if (armor.points.size() != 4 ||
+      !std::all_of(armor.points.begin(), armor.points.end(), [](const cv::Point2f & p) {
+        return std::isfinite(p.x) && std::isfinite(p.y);
+      })) return false;
+  double first_turn = 0.0;
+  for (std::size_t i = 0; i < 4; ++i) {
+    const cv::Point2d a = armor.points[i];
+    const cv::Point2d b = armor.points[(i + 1) % 4];
+    const cv::Point2d c = armor.points[(i + 2) % 4];
+    const double turn = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (!std::isfinite(turn) || turn == 0.0 || (i && std::signbit(turn) != std::signbit(first_turn)))
+      return false;
+    if (!i) first_turn = turn;
+  }
+  try {
+    return solve_pose(armor, true);
+  } catch (const cv::Exception &) {
+    return false;
+  }
+}
+
+bool Solver::solve_pose(Armor & armor, bool high_speed_refinement) const
 {
   const auto & object_points =
     (armor.type == ArmorType::big) ? BIG_ARMOR_POINTS : SMALL_ARMOR_POINTS;
 
   cv::Vec3d rvec, tvec;
-  cv::solvePnP(
+  const bool solved = cv::solvePnP(
     object_points, armor.points, camera_matrix_, distort_coeffs_, rvec, tvec, false,
     cv::SOLVEPNP_IPPE);
+  if (high_speed_refinement && (!solved ||
+      !std::all_of(rvec.val, rvec.val + 3, [](double v) { return std::isfinite(v); }) ||
+      !std::all_of(tvec.val, tvec.val + 3, [](double v) { return std::isfinite(v); })))
+    return false;
 
   Eigen::Vector3d xyz_in_camera;
   cv::cv2eigen(tvec, xyz_in_camera);
@@ -84,6 +115,14 @@ void Solver::solve(Armor & armor, bool high_speed_refinement) const
 
   cv::Mat rmat;
   cv::Rodrigues(rvec, rmat);
+  if (high_speed_refinement) {
+    // Every physical corner must be in front of the camera, not just its centre.
+    for (const auto & point : object_points) {
+      const double depth = rmat.at<double>(2, 0) * point.x +
+        rmat.at<double>(2, 1) * point.y + rmat.at<double>(2, 2) * point.z + tvec[2];
+      if (!std::isfinite(depth) || depth <= 0.0) return false;
+    }
+  }
   Eigen::Matrix3d R_armor2camera;
   cv::cv2eigen(rmat, R_armor2camera);
   Eigen::Matrix3d R_armor2gimbal = R_camera2gimbal_ * R_armor2camera;
@@ -92,18 +131,23 @@ void Solver::solve(Armor & armor, bool high_speed_refinement) const
   armor.ypr_in_world = tools::eulers(R_armor2world, 2, 1, 0);
 
   armor.ypd_in_world = tools::xyz2ypd(armor.xyz_in_world);
+  if (high_speed_refinement && (!armor.xyz_in_gimbal.allFinite() ||
+      !armor.xyz_in_world.allFinite() || !armor.ypr_in_gimbal.allFinite() ||
+      !armor.ypr_in_world.allFinite() || !armor.ypd_in_world.allFinite())) return false;
 
   // 平衡不做yaw优化，因为pitch假设不成立
   auto is_balance = (armor.type == ArmorType::big) &&
                     (armor.name == ArmorName::three || armor.name == ArmorName::four ||
                      armor.name == ArmorName::five);
-  if (is_balance) return;
+  if (is_balance) return true;
 
   if (high_speed_refinement && armor.type == ArmorType::small &&
       armor.name != ArmorName::outpost && armor.name != ArmorName::base)
     optimize_high_speed_yaw(armor);
   else
     optimize_yaw(armor);
+  return !high_speed_refinement ||
+    (std::isfinite(armor.yaw_raw) && armor.ypr_in_world.allFinite());
 }
 
 std::vector<cv::Point2f> Solver::reproject_armor(

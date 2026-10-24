@@ -31,7 +31,9 @@ public:
 
   void set_R_gimbal2world(const Eigen::Quaterniond & q);
 
-  void solve(Armor & armor, bool high_speed_refinement = false) const;
+  // False means the guarded high-speed observation must be discarded. Legacy
+  // callers retain their original solve/exception behaviour when the flag is off.
+  bool solve(Armor & armor, bool high_speed_refinement = false) const;
 
   std::vector<cv::Point2f> reproject_armor(
     const Eigen::Vector3d & xyz_in_world, double yaw, ArmorType type, ArmorName name) const;
@@ -51,6 +53,7 @@ private:
   Eigen::Vector3d t_camera2gimbal_;
   Eigen::Matrix3d R_gimbal2world_;
 
+  bool solve_pose(Armor & armor, bool high_speed_refinement) const;
   void optimize_yaw(Armor & armor) const;
   void optimize_high_speed_yaw(Armor & armor) const;
   std::vector<double> yaw_errors(const Armor & armor, const std::vector<double> & yaws) const;
